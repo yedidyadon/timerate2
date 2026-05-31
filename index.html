@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Human Time Control</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/addons/p5.sound.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #ffffff; /* רקע לבן נקי כמו ברפרנס */
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            color: #000000;
+            -webkit-tap-highlight-color: transparent;
+        }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+
+<script>
+let appState = "START"; // START, PLAYING
+let controlMode = "TAP"; // TAP, PULSE, BLINK
+let capture;
+let song;
+let amplitude;
+
+// משתני קצב וזמן אנושי
+let currentBPM = 80;
+let targetBPM = 80;
+let tapTimes = [];
+let blinkTimes = [];
+let rValues = [];
+let lastBeatTime = 0;
+
+// משתני חזותיים (אנימציה ומגע)
+let volHistory = new Array(100).fill(0);
+let touchPulses = [];
+let activeModeColor;
+
+function preload() {
+    soundFormats('mp3');
+    song = loadSound('song.mp3', 
+        () => console.log("המוזיקה נטענה"), 
+        () => console.log("עובד על סינתיסייזר גיבוי")
+    );
+}
+
+function setup() {
+    createCanvas(windowWidth, windowHeight);
+    amplitude = new p5.Amplitude(0.85);
+    activeModeColor = color(180, 40, 30); // אדום בורדו עדין כמו ברפרנס
+}
+
+function draw() {
+    background(255); // רקע לבן נקי לחלוטין
+
+    // החלקת שינויי הקצב (שמעבר המהירות במוזיקה יישמע חלק ולא קטוע)
+    currentBPM = lerp(currentBPM, targetBPM, 0.05);
+    if (song && song.isLoaded() && song.isPlaying()) {
+        let rate = map(currentBPM, 40, 180, 0.5, 2.0, true);
+        song.rate(rate);
+    }
+
+    if (appState === "START") {
+        drawStartScreen();
+    } else if (appState === "PLAYING") {
+        runHardwareAnalysis();
+        drawPlayerScreen();
+    }
+
+    // ציור אנימציות הלחיצה (ריכוך עיגולים מתרחבים)
+    drawTouchPulses();
+}
+
+// === מסך פתיחה מינימליסטי (לפי הרפרנס שלך) ===
+function drawStartScreen() {
+    textAlign(CENTER, CENTER);
+    noStroke();
+    fill(180, 40, 30);
+    textSize(14);
+    text("tap to check heart rate", width / 2, height / 3);
+
+    // עיגול מרכזי דק לבחירה
+    noFill();
+    stroke(180, 40, 30);
+    strokeWeight(2);
+    ellipse(width / 2, height / 2, 80, 80);
+}
+
+// === מסך הנגן הראשי ===
+function drawPlayerScreen() {
+    // 1. קו טיימליין אופקי חוצה מסך (כמו ברפרנס 28 ו-22)
+    let timelineY = height / 2;
+    stroke(180, 40, 30, 80);
+    strokeWeight(1.5);
+    line(0, timelineY, width, timelineY);
+
+    // נקודת התקדמות השיר על הקו
+    let durationSec = song && song.isLoaded() ? song.duration() : 180;
+    let currentSec = song && song.isPlaying() ? song.currentTime() : (millis() / 1000) % durationSec;
+    let progressX = map(currentSec, 0, durationSec, 0, width);
+    
+    fill(180, 40, 30);
+    noStroke();
+    ellipse(progressX, timelineY, 8, 8);
+
+    // 2. מוניטור דציבלים מרוסן (מעל הקו)
+    drawLinearMonitor(timelineY);
+
+    // 3. תצוגת הקצב הנוכחי (BPM) במרכז למעלה
+    textAlign(CENTER);
+    fill(0, 150);
+    textSize(12);
+    text("CURRENT RATE (BPM)", width / 2, 70);
+    fill(0);
+    textSize(36);
+    text(Math.round(currentBPM), width / 2, 110);
+
+    // 4. תפריט כפתורי מצבים בתחתית המסך
+    drawBottomMenu();
+}
+
+// גרף קו עולה ויורד כמו מוניטור
+function drawLinearMonitor(baselineY) {
+    let level = amplitude.getLevel();
+    let targetY = map(level, 0, 0.4, 0, 80, true);
+    volHistory.push(targetY);
+    if (volHistory.length > width / 4) volHistory.shift();
+
+    stroke(180, 40, 30);
+    strokeWeight(1.5);
+    noFill();
+    push();
+    translate(0, baselineY);
+    beginShape();
+    for (let i = 0; i < volHistory.length; i++) {
+        let x = map(i, 0, volHistory.length - 1, 0, width);
+        let y = -volHistory[i]; // עולה למעלה מהקו
+        vertex(x, y);
+    }
+    endShape();
+    pop();
+}
+
+// תפריט תחתון נקי
+function drawBottomMenu() {
+    let y = height - 80;
+    let spacing = width / 4;
+    
+    textAlign(CENTER, CENTER);
+    textSize(12);
+    
+    // כפתור TAP
+    fill(controlMode === "TAP" ? color(180, 40, 30) : color(150));
+    text("TAP", spacing, y);
+    
+    // כפתור PULSE (דופק)
+    fill(controlMode === "PULSE" ? color(180, 40, 30) : color(150));
+    text("PULSE", spacing * 2, y);
+    
+    // כפתור BLINK (מצמוץ)
+    fill(controlMode === "BLINK" ? color(180, 40, 30) : color(150));
+    text("BLINK", spacing * 3, y);
+}
+
+// === ניהול קלט חומרה וחיישנים בזמן אמת ===
+function runHardwareAnalysis() {
+    if (!capture || !capture.width) return;
+
+    capture.loadPixels();
+    if (!capture.pixels || capture.pixels.length === 0) return;
+
+    let totalVal = 0;
+    let count = 0;
+
+    if (controlMode === "PULSE") {
+        // PPG: ניתוח ערוץ אדום מהמצלמה האחורית
+        for (let i = 0; i < capture.pixels.length; i += 8) {
+            totalVal += capture.pixels[i];
+            count++;
+        }
+        let avgRed = totalVal / count;
+        rValues.push(avgRed);
+        if (rValues.length > 80) rValues.shift();
+
+        if (rValues.length > 10) {
+            let localAvg = rValues.reduce((a, b) => a + b, 0) / rValues.length;
+            if (rValues[rValues.length - 1] > localAvg && rValues[rValues.length - 2] <= localAvg) {
+                let now = millis();
+                if (now - lastBeatTime > 400 && now - lastBeatTime < 1200) {
+                    targetBPM = 60000 / (now - lastBeatTime);
+                }
+                lastBeatTime = now;
+            }
+        }
+    } 
+    else if (controlMode === "BLINK") {
+        // מצמוץ: ניתוח בהירות כללית מהמצלמה הקדמית
+        for (let i = 0; i < capture.pixels.length; i += 16) {
+            totalVal += (capture.pixels[i] + capture.pixels[i+1] + capture.pixels[i+2]) / 3;
+            count++;
+        }
+        let brightness = totalVal / count;
+        rValues.push(brightness);
+        if (rValues.length > 30) rValues.shift();
+
+        // זיהוי נפילת אור חדה (מצמוץ או הסתרה קלה של המצלמה)
+        if (rValues.length > 5) {
+            let localAvg = rValues.reduce((a, b) => a + b, 0) / rValues.length;
+            if (rValues[rValues.length - 1] < localAvg * 0.85) { // נפילה של 15% באור
+                let now = millis();
+                if (blinkTimes.length === 0 || now - blinkTimes[blinkTimes.length - 1] > 300) {
+                    blinkTimes.push(now);
+                    // הוספת פעימת מגע חזותית במרכז כדי לסמן שהמצמוץ נקלט
+                    touchPulses.push({ x: width/2, y: height/2, r: 10, alpha: 255 });
+                }
+            }
+        }
+        // חישוב קצב מצמוצים לדקה (BPM) על בסיס 15 השניות האחרונות
+        let now = millis();
+        blinkTimes = blinkTimes.filter(t => now - t < 15000);
+        if (blinkTimes.length >= 2) {
+            targetBPM = map(blinkTimes.length * 4, 4, 60, 50, 150, true);
+        }
+    }
+}
+
+// === ניהול לחיצות ואינטראקציה (מגע) ===
+function mousePressed() {
+    // הוספת עיגול פועם בכל לחיצה
+    touchPulses.push({ x: mouseX, y: mouseY, r: 10, alpha: 255 });
+
+    if (appState === "START") {
+        // לחיצה על כפתור ההתחלה במסך הראשון
+        userStartAudio();
+        if (song && song.isLoaded()) song.loop();
+        appState = "PLAYING";
+        return false;
+    }
+
+    // ניווט בתפריט התחתון לפי מיקום הלחיצה (y גבוה)
+    if (mouseY > height - 120) {
+        let spacing = width / 4;
+        if (capture) { capture.stop(); capture = null; } // איפוס מצלמה קודמת
+        
+        if (mouseX < spacing * 1.5) {
+            controlMode = "TAP";
+        } else if (mouseX < spacing * 2.5) {
+            controlMode = "PULSE";
+            initCamera("environment"); // מצלמה אחורית
+        } else {
+            controlMode = "BLINK";
+            initCamera("user"); // מצלמה קדמית
+        }
+        return false;
+    }
+
+    // לוגיקת מצב TAP ידני: חישוב מרווחים בין לחיצות (Tap BPM)
+    if (controlMode === "TAP") {
+        let now = millis();
+        tapTimes.push(now);
+        if (tapTimes.length > 5) tapTimes.shift();
+
+        if (tapTimes.length >= 2) {
+            let totalDiff = 0;
+            for (let i = 1; i < tapTimes.length; i++) {
+                totalDiff += (tapTimes[i] - tapTimes[i-1]);
+            }
+            let avgDiff = totalDiff / (tapTimes.length - 1);
+            targetBPM = 60000 / avgDiff;
+        }
+    }
+    return false;
+}
+
+function initCamera(mode) {
+    let constraints = {
+        video: { facingMode: mode, width: 80, height: 60 },
+        audio: false
+    };
+    capture = createCapture(constraints);
+    capture.hide();
+}
+
+function drawTouchPulses() {
+    noFill();
+    strokeWeight(1.5);
+    for (let i = touchPulses.length - 1; i >= 0; i--) {
+        let p = touchPulses[i];
+        p.r += 3;       // קצב הגדילה של העיגול
+        p.alpha -= 5;   // קצב ההיעלמות
+        stroke(180, 40, 30, p.alpha);
+        ellipse(p.x, p.y, p.r, p.r);
+
+        if (p.alpha <= 0) {
+            touchPulses.splice(i, 1);
+        }
+    }
+}
+
+function windowResized() {
+    resizeCanvas(windowWidth, windowHeight);
+}
+</script>
+
+</body>
+</html>
